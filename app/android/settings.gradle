@@ -1,0 +1,3 @@
+rootProject.name = 'cnbooks'
+
+include ':app'
