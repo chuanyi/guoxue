@@ -1,98 +1,172 @@
 package main
 
 import (
+	"fmt"
 	"encoding/json"
 	"strings"
-	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/PuerkitoBio/goquery"
 )
 
-type Index struct {
-	Title string
-	URL string
-	Indexes []Index
-}
-
-/*
- * using stack to implement:
- * http://www.cnblogs.com/chinabrle/p/3541993.html
- * http://outofmemory.cn/code-snippet/8358/Go-stack
- */
-func fetchIndexes2() {
-	doc, err := goquery.NewDocument("http://ctext.org/kongcongzi/zhs")
-	if err == nil {
-		count := 0
-		doc.Find("#content2").Find("a").Each(func(idx int, s *goquery.Selection){
-			href,_ := s.Attr("href")
-			if strings.HasSuffix(href, "/zhs") {
-				fmt.Println(s.Text()+"-"+href)
-				count++
-			}
-		})
-		i := 0
-		ready := false
-		doc.Find("#searchform").Find("option").Each(func(idx int, s *goquery.Selection){
-			if ready {
-				i++
-				if i <= count {
-					fmt.Println(s.Text())
-				}
-				return
-			}
-			if _, ok := s.Attr("selected"); ok {
-				ready = true
-			}
-		})
-	}else{
-		fmt.Println("fetch fail:"+err.Error())
-	}
-}
-
 func main() {
+	 b, err := fetchIndexes("zhs", "yanzi-chun-qiu")
+	 fmt.Println(err)
+	 fmt.Println(string(b))
+	if true {
+		return
+	}
+	
 	web := gin.Default()
+	gin.SetMode(gin.ReleaseMode)
 	api := web.Group("/api")
 	api.GET("/books", func(c *gin.Context){
 		if out, err := fetchBooks(c.Query("lang")); err == nil {
-			c.JSON(200, gin.H{"code":0,"msg":"", "data":out})
+			c.Data(200, "application/json; charset=utf-8", out)
 		} else {
-			c.JSON(200, gin.H{"code":1,"msg":err.Error()})
+			c.JSON(200, []string{})
 		}
 	})
 	api.GET("/indexes", func(c *gin.Context){
 		if out, err := fetchIndexes(c.Query("lang"),c.Query("id")); err == nil {
-			c.JSON(200, gin.H{"code":0,"msg":"", "data":out})
+			c.Data(200, "application/json; charset=utf-8", out)
 		} else {
-			c.JSON(200, gin.H{"code":1,"msg":err.Error()})
+			c.JSON(200, []string{})
 		}
 	})
 	api.GET("/contents", func(c *gin.Context){
 		if out, err := fetchContents(c.Query("lang"),c.Query("id")); err == nil {
-			c.JSON(200, gin.H{"code":0,"msg":"", "data":out})
+			c.Data(200, "application/json; charset=utf-8", out)
 		} else {
-			c.JSON(200, gin.H{"code":1,"msg":err.Error()})
+			c.JSON(200, []string{})
 		}
 	})
-	web.Run(":8888")
+	web.Run(":8866")
 }
 
 /**
  * fetch contents from ctext.org
+ *   support segments and header-titles
  */
-func fetchContents(lang, indexID string) (out string, err error) {
+func fetchContents(lang, indexID string) (out []byte, err error) {
 	return
 }
 
 /**
  * fetch indexes from ctext.org
- * special handler:
- * 1. no index, book->content
- * 2. multi-level, index->subindex
- * 3. no-content index, some index exists but can not click
- * 4. four depth level index (晏子春秋(yanzi-chun-qiu/zh))
+ *   support all normal tree struct,
+ *   but yet specials as follows:
+ * 1. no index, book->content (OK, return book level index)
+ *       儒家->孝经、独断
+ *       墨家->鲁胜墨辩注叙
+ *       道家->道德经
+ *       法家->申不害、谏逐客书
+ *       兵家->司马法、三略
+ *       算书->海岛算经、孙子算经
+ *       杂家->尹文子、邓析子
+ *       史书->燕丹子
+ *       出土文献->郭店
+ *       魏晋南北朝->道德真经注、神异经、洞冥记
+ *       隋唐->黄帝阴符经
+ *       宋明->三字经
+ * 2. no-content index, some index exists but can not click(OK, but only return exists items)
+ *       儒家->新书、论衡
+ *       墨家->墨子
+ *       法家->商君书、管子
+ *       杂家->鬼谷子
+ *       史书->逸周书、东观汉记、竹书纪年
+ *       魏晋南北朝->金楼子
+ * 3. four or more depth level index(OK, special handler, TODO...)
+ *       史书->晏子春秋
+ *       宋明->太平广记
+ * 4. none id in href:
+ *       儒家->蔡中郎集
+ *       魏晋南北朝->水经注、三国志、高士传
+ *       隋唐->群书治要、艺文类聚、意林
+ *       宋明->广韵
  */
-func fetchIndexes(lang, bookID string) (out string, err error) {
-	return
+func fetchIndexes(lang, bookID string) (out []byte, err error) {
+	type Index struct {
+		ID string	`json:"id"`
+		Title string `json:"title"`
+		Subs []*Index  `json:"subs"`
+		Level int `json:"-"`
+	}
+	root := &Index{ Level:-1, Subs:make([]*Index, 0) }
+	subs := []*Index{}
+	var doc *goquery.Document
+	doc, err = goquery.NewDocument("http://ctext.org/"+bookID+"/"+lang)
+	if err != nil {
+		return
+	}
+	count := 0
+	selRoot := doc.Find("#content2")
+	if len(selRoot.Nodes) <= 0 { // no index, show contents directly
+		return []byte("[{\"id\":\""+bookID+"\",\"title\":\"(全文)\",\"subs\":null}]"), nil  
+	}
+	selRoot.Find("a").Each(func(idx int, s *goquery.Selection){
+		href,_ := s.Attr("href")
+		if !strings.HasPrefix(href, "http") && strings.HasSuffix(href, "/"+lang) {
+			idx := &Index{}
+			idx.ID = strings.Replace(href, "/"+lang, "", 1)
+			idx.Title = s.Text()
+			subs = append(subs, idx)
+			count++
+			//fmt.Println("a - ",s.Text(), href)
+		}
+	})
+	i := 0
+	ready := false
+	doc.Find("#searchform").Find("option").Each(func(idx int, s *goquery.Selection){
+		if ready {
+			i++
+			if i <= count {
+				subs[i-1].Level = strings.Count(s.Text(), string(160))
+				//fmt.Println("t:", subs[i-1].Title,"l:", subs[i-1].Level)
+			}
+			return
+		}
+		if _, ok := s.Attr("selected"); ok {
+			ready = true
+		}
+	})
+
+	//fmt.Println("begin ...")
+	stack := []*Index{}
+	stack = append(stack, root)
+	for i,_ := range subs {
+		top := stack[len(stack) - 1]
+		if subs[i].Level > top.Level {
+			top.Subs = append(top.Subs, subs[i])
+			stack = append(stack, subs[i])
+			//fmt.Println("sub op, top:", top.Title, "sub:", subs[i].Title)
+		} else if subs[i].Level == top.Level {
+			ref2 := stack[len(stack) - 2]
+			ref2.Subs =append(ref2.Subs, subs[i])
+			stack = append(stack[:(len(stack)-1)], subs[i])
+			//fmt.Println("append op, top:", ref2.Title, "sub:", subs[i].Title)
+		} else { // "<"
+		    var j = len(stack)-1
+			for ; j >= 0; j-- {
+				if stack[j].Level <= subs[i].Level {
+					break
+				}
+			}
+			stack = stack[:j]
+			top = stack[len(stack) - 1]
+			if stack[j-1].Level == subs[i].Level {
+				ref2 := stack[len(stack) - 2]
+				ref2.Subs =append(ref2.Subs, subs[i])
+				stack = append(stack[:(len(stack)-1)], subs[i])
+				//fmt.Println("up op, top:", ref2.Title, "sub:", subs[i].Title)
+			}else{
+				top.Subs = append(top.Subs, subs[i])
+				stack = append(stack, subs[i])
+				//fmt.Println("up op2, top:", top.Title, "sub:", subs[i].Title)
+			}
+		}
+	}
+	// step 3 - marshal to json string
+	return json.Marshal(root.Subs)
 }
 
 /**
@@ -102,7 +176,7 @@ func fetchIndexes(lang, bookID string) (out string, err error) {
  * 2. fetch desc by lang & parse desc tree
  *      
  */
-func fetchBooks(lang string) (out string, err error) {
+func fetchBooks(lang string) (out []byte, err error) {
 	type Book struct {
 		ID string `json:"id"`
 		Title string `json:"title"`
@@ -191,6 +265,5 @@ func fetchBooks(lang string) (out string, err error) {
 		}
 	}
 	// step 3 - marshal to json string
-	b, _ := json.Marshal(all)
-	return string(b), nil
+	return json.Marshal(all)
 }
