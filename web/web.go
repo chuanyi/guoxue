@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"encoding/json"
 	"strings"
@@ -9,9 +10,10 @@ import (
 )
 
 func main() {
-	 b, err := fetchIndexes("zhs", "yanzi-chun-qiu")
-	 fmt.Println(err)
-	 fmt.Println(string(b))
+	 //b, err := 
+	fetchContents("zhs", "analects/xue-er")
+	 //fmt.Println(err)
+	 //fmt.Println(string(b))
 	if true {
 		return
 	}
@@ -48,6 +50,21 @@ func main() {
  *   support segments and header-titles
  */
 func fetchContents(lang, indexID string) (out []byte, err error) {
+	//ctns := []string{}
+	var doc *goquery.Document
+	doc, err = goquery.NewDocument("http://ctext.org/"+indexID+"/"+lang)
+	if err != nil {
+		return
+	}
+	sel := doc.Find("#content3")
+	if len(sel.Nodes) <= 0 {
+		return nil, errors.New("Contents not found.")
+	}
+	sel.Find("table").Each(func(idx int, s *goquery.Selection){
+		if v,_ := s.Attr("border"); v == "0" {
+			fmt.Println(s.Text())
+		}
+	})
 	return
 }
 
@@ -78,13 +95,28 @@ func fetchContents(lang, indexID string) (out []byte, err error) {
  * 3. four or more depth level index(OK, special handler, TODO...)
  *       史书->晏子春秋
  *       宋明->太平广记
- * 4. none id in href:
+ * 4. none id in href(not support now, TODO...)
  *       儒家->蔡中郎集
  *       魏晋南北朝->水经注、三国志、高士传
  *       隋唐->群书治要、艺文类聚、意林
  *       宋明->广韵
  */
 func fetchIndexes(lang, bookID string) (out []byte, err error) {
+	errs := map[string]int{
+		"yanzi-chun-qiu":0,
+		"taiping-guangji":0,
+		"caizhong-langji":0,
+		"shui-jing-zhu":0,
+		"sanguozhi":0,
+		"gaoshizhuan":0,
+		"qunshu-zhiyao":0,
+		"yiwen-leiju":0,
+		"yilin":0,
+		"guangyun":0,
+	}
+	if _, ok := errs[bookID];ok {
+		return nil, errors.New("Not support now!")
+	}
 	type Index struct {
 		ID string	`json:"id"`
 		Title string `json:"title"`
