@@ -1,47 +1,53 @@
 package main
 
 import (
+	"time"
+	"sync"
 	"errors"
-	"fmt"
 	"encoding/json"
-	"strings"
-	"github.com/gin-gonic/gin"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/gin-gonic/gin"
+	"gopkg.in/mgo.v2"
+	"strings"
 )
 
 func main() {
-	 //b, err := 
-	fetchContents("zhs", "analects/xue-er")
-	 //fmt.Println(err)
-	 //fmt.Println(string(b))
-	if true {
-		return
+	time.Sleep(time.Second*5)
+	db, err := mgo.Dial("127.0.0.1")
+	if err != nil {
+		panic(err)
 	}
-	
+	defer db.Close()
+	kvs := db.DB("guoxue").C("kvs")
+	var mux sync.Mutex	
 	web := gin.Default()
 	gin.SetMode(gin.ReleaseMode)
 	api := web.Group("/api")
-	api.GET("/books", func(c *gin.Context){
-		if out, err := fetchBooks(c.Query("lang")); err == nil {
-			c.Data(200, "application/json; charset=utf-8", out)
-		} else {
-			c.JSON(200, []string{})
+	cacheOrCrawler := func (route string, fetch func(string, string)([]byte,error)) {
+		type Rec struct {
+			ID string `bson:"_id"`
+			V  string `bson:"v"`
 		}
-	})
-	api.GET("/indexes", func(c *gin.Context){
-		if out, err := fetchIndexes(c.Query("lang"),c.Query("id")); err == nil {
-			c.Data(200, "application/json; charset=utf-8", out)
-		} else {
-			c.JSON(200, []string{})
-		}
-	})
-	api.GET("/contents", func(c *gin.Context){
-		if out, err := fetchContents(c.Query("lang"),c.Query("id")); err == nil {
-			c.Data(200, "application/json; charset=utf-8", out)
-		} else {
-			c.JSON(200, []string{})
-		}
-	})
+		api.GET(route, func(c *gin.Context){
+			lang, id, res := c.Query("lang"), c.Query("id"), Rec{}
+			mux.Lock()
+			defer mux.Unlock()
+			err := kvs.FindId(lang+"_"+id).One(&res)
+			if err != nil { // not cached, try to crawler
+				if out, err2 := fetch(lang, id); err2 == nil {
+					kvs.Insert(&Rec{ID:(lang+"_"+id),V:string(out)})
+					c.Data(200, "application/json; charset=utf-8", out)
+				} else {
+					c.JSON(200, gin.H{"err": err2.Error()})
+				}
+			}else{
+				c.Data(200, "application/json; charset=utf-8", []byte(res.V))
+			}
+		})
+	}
+	cacheOrCrawler("/books", fetchBooks);
+	cacheOrCrawler("/indexes", fetchIndexes);
+	cacheOrCrawler("/contents", fetchContents);
 	web.Run(":8866")
 }
 
@@ -50,9 +56,13 @@ func main() {
  *   support segments and header-titles
  */
 func fetchContents(lang, indexID string) (out []byte, err error) {
-	//ctns := []string{}
+	type Content struct {
+		T string `json:"t"` // t-title, r-raw, m-coments
+		D string `json:"d"` // contents
+	}
+	ctns := []Content{}
 	var doc *goquery.Document
-	doc, err = goquery.NewDocument("http://ctext.org/"+indexID+"/"+lang)
+	doc, err = goquery.NewDocument("http://ctext.org/" + indexID + "/" + lang)
 	if err != nil {
 		return
 	}
@@ -60,12 +70,31 @@ func fetchContents(lang, indexID string) (out []byte, err error) {
 	if len(sel.Nodes) <= 0 {
 		return nil, errors.New("Contents not found.")
 	}
-	sel.Find("table").Each(func(idx int, s *goquery.Selection){
-		if v,_ := s.Attr("border"); v == "0" {
-			fmt.Println(s.Text())
+	sel.Find("table").Each(func(idx int, s *goquery.Selection) {
+		if v, _ := s.Attr("width"); v == "100%" {
+			h2 := s.Find("h2")
+			if len(h2.Nodes) > 0 {
+				ctns = append(ctns, Content{T: "t", D: s.Find("h2").Text()})
+				// fmt.Println("t: t", s.Find("h2").Text())
+			}
+		}
+		if v, _ := s.Attr("border"); v == "0" {
+			s.Find(".ctext,.mctext").Each(func(idx2 int, s2 *goquery.Selection) {
+				if valign, _ := s2.Attr("valign"); valign == "" {
+					t := "r"
+					if s2.Is(".mctext") {
+						t = "m"
+					}
+					str := strings.Trim(s2.Text(), " \r\n")
+					if str != "" {
+						ctns = append(ctns, Content{T: t, D: str})
+						// fmt.Println("t:",t,str)
+					}
+				}
+			})
 		}
 	})
-	return
+	return json.Marshal(ctns)
 }
 
 /**
@@ -103,40 +132,40 @@ func fetchContents(lang, indexID string) (out []byte, err error) {
  */
 func fetchIndexes(lang, bookID string) (out []byte, err error) {
 	errs := map[string]int{
-		"yanzi-chun-qiu":0,
-		"taiping-guangji":0,
-		"caizhong-langji":0,
-		"shui-jing-zhu":0,
-		"sanguozhi":0,
-		"gaoshizhuan":0,
-		"qunshu-zhiyao":0,
-		"yiwen-leiju":0,
-		"yilin":0,
-		"guangyun":0,
+		"yanzi-chun-qiu":  0,
+		"taiping-guangji": 0,
+		"caizhong-langji": 0,
+		"shui-jing-zhu":   0,
+		"sanguozhi":       0,
+		"gaoshizhuan":     0,
+		"qunshu-zhiyao":   0,
+		"yiwen-leiju":     0,
+		"yilin":           0,
+		"guangyun":        0,
 	}
-	if _, ok := errs[bookID];ok {
+	if _, ok := errs[bookID]; ok {
 		return nil, errors.New("Not support now!")
 	}
 	type Index struct {
-		ID string	`json:"id"`
-		Title string `json:"title"`
-		Subs []*Index  `json:"subs"`
-		Level int `json:"-"`
+		ID    string   `json:"id"`
+		Title string   `json:"title"`
+		Subs  []*Index `json:"subs"`
+		Level int      `json:"-"`
 	}
-	root := &Index{ Level:-1, Subs:make([]*Index, 0) }
+	root := &Index{Level: -1, Subs: make([]*Index, 0)}
 	subs := []*Index{}
 	var doc *goquery.Document
-	doc, err = goquery.NewDocument("http://ctext.org/"+bookID+"/"+lang)
+	doc, err = goquery.NewDocument("http://ctext.org/" + bookID + "/" + lang)
 	if err != nil {
 		return
 	}
 	count := 0
 	selRoot := doc.Find("#content2")
 	if len(selRoot.Nodes) <= 0 { // no index, show contents directly
-		return []byte("[{\"id\":\""+bookID+"\",\"title\":\"(全文)\",\"subs\":null}]"), nil  
+		return []byte("[{\"id\":\"" + bookID + "\",\"title\":\"(全文)\",\"subs\":null}]"), nil
 	}
-	selRoot.Find("a").Each(func(idx int, s *goquery.Selection){
-		href,_ := s.Attr("href")
+	selRoot.Find("a").Each(func(idx int, s *goquery.Selection) {
+		href, _ := s.Attr("href")
 		if !strings.HasPrefix(href, "http") && strings.HasSuffix(href, "/"+lang) {
 			idx := &Index{}
 			idx.ID = strings.Replace(href, "/"+lang, "", 1)
@@ -148,7 +177,7 @@ func fetchIndexes(lang, bookID string) (out []byte, err error) {
 	})
 	i := 0
 	ready := false
-	doc.Find("#searchform").Find("option").Each(func(idx int, s *goquery.Selection){
+	doc.Find("#searchform").Find("option").Each(func(idx int, s *goquery.Selection) {
 		if ready {
 			i++
 			if i <= count {
@@ -165,32 +194,32 @@ func fetchIndexes(lang, bookID string) (out []byte, err error) {
 	//fmt.Println("begin ...")
 	stack := []*Index{}
 	stack = append(stack, root)
-	for i,_ := range subs {
-		top := stack[len(stack) - 1]
+	for i, _ := range subs {
+		top := stack[len(stack)-1]
 		if subs[i].Level > top.Level {
 			top.Subs = append(top.Subs, subs[i])
 			stack = append(stack, subs[i])
 			//fmt.Println("sub op, top:", top.Title, "sub:", subs[i].Title)
 		} else if subs[i].Level == top.Level {
-			ref2 := stack[len(stack) - 2]
-			ref2.Subs =append(ref2.Subs, subs[i])
+			ref2 := stack[len(stack)-2]
+			ref2.Subs = append(ref2.Subs, subs[i])
 			stack = append(stack[:(len(stack)-1)], subs[i])
 			//fmt.Println("append op, top:", ref2.Title, "sub:", subs[i].Title)
 		} else { // "<"
-		    var j = len(stack)-1
+			var j = len(stack) - 1
 			for ; j >= 0; j-- {
 				if stack[j].Level <= subs[i].Level {
 					break
 				}
 			}
 			stack = stack[:j]
-			top = stack[len(stack) - 1]
+			top = stack[len(stack)-1]
 			if stack[j-1].Level == subs[i].Level {
-				ref2 := stack[len(stack) - 2]
-				ref2.Subs =append(ref2.Subs, subs[i])
+				ref2 := stack[len(stack)-2]
+				ref2.Subs = append(ref2.Subs, subs[i])
 				stack = append(stack[:(len(stack)-1)], subs[i])
 				//fmt.Println("up op, top:", ref2.Title, "sub:", subs[i].Title)
-			}else{
+			} else {
 				top.Subs = append(top.Subs, subs[i])
 				stack = append(stack, subs[i])
 				//fmt.Println("up op2, top:", top.Title, "sub:", subs[i].Title)
@@ -206,16 +235,16 @@ func fetchIndexes(lang, bookID string) (out []byte, err error) {
  * 1. fetch root by lang & parse book tree
  *      http://ctext.org/zh
  * 2. fetch desc by lang & parse desc tree
- *      
+ *
  */
-func fetchBooks(lang string) (out []byte, err error) {
+func fetchBooks(lang, emptyID string) (out []byte, err error) {
 	type Book struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
 		Title string `json:"title"`
-		Desc string `json:"desc"`
-	}	
+		Desc  string `json:"desc"`
+	}
 	type Cate struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
 		Title string `json:"title"`
 		Books []Book `json:"books"`
 	}
@@ -227,11 +256,11 @@ func fetchBooks(lang string) (out []byte, err error) {
 		return
 	}
 	first := true
-	doc.Find("#menu").Find("span.menuitem").Each(func(idx int, s *goquery.Selection){
-		if !first  {
+	doc.Find("#menu").Find("span.menuitem").Each(func(idx int, s *goquery.Selection) {
+		if !first {
 			first_cate := true
-	        cat := Cate{}
-			s.Find("a.menuitem").Each(func(idx2 int, c *goquery.Selection){
+			cat := Cate{}
+			s.Find("a.menuitem").Each(func(idx2 int, c *goquery.Selection) {
 				href, _ := c.Attr("href")
 				if first_cate {
 					// fmt.Println("cat:"+c.Text()+"-"+href)
@@ -239,7 +268,7 @@ func fetchBooks(lang string) (out []byte, err error) {
 					cat.Title = c.Text()
 					cat.Books = make([]Book, 0)
 					first_cate = false
-				}else{
+				} else {
 					// fmt.Println("book:"+c.Text()+"-"+href)
 					book := Book{}
 					book.ID = strings.Replace(href, "/"+lang, "", 1)
@@ -262,7 +291,7 @@ func fetchBooks(lang string) (out []byte, err error) {
 	}
 	fill_desc := func(url, start string) {
 		curId, ready := "", false
-		doc, err = goquery.NewDocument(url+lang)
+		doc, err = goquery.NewDocument(url + lang)
 		if err != nil {
 			return
 		}
@@ -270,13 +299,13 @@ func fetchBooks(lang string) (out []byte, err error) {
 			if s.Text() != RELA {
 				if s.Is("a") {
 					href, _ := s.Attr("href")
-					curId = strings.Replace(href,"/"+lang,"",1)
+					curId = strings.Replace(href, "/"+lang, "", 1)
 				} else if s.Is("span") {
 					descs[curId] = s.Text()
 				}
 			}
 		}
-		doc.Find("#content3").Find("a,span").Each(func(idx int, s *goquery.Selection){
+		doc.Find("#content3").Find("a,span").Each(func(idx int, s *goquery.Selection) {
 			if ready {
 				handle(s)
 				return
@@ -284,7 +313,7 @@ func fetchBooks(lang string) (out []byte, err error) {
 			if s.Text() == start {
 				ready = true
 			}
-			if ready { 
+			if ready {
 				handle(s)
 			}
 		})
