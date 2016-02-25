@@ -10,27 +10,39 @@
 import React, {
   AppRegistry,
   Component,
-  Image,
-  ListView,
-  StyleSheet,
   Text,
+  ListView,
+  Navigator,
+  StyleSheet,
+  TouchableHighlight,
+  ToastAndroid,
   View
 } from 'react-native';
 
-var API_KEY = '7waqfqbprs7pajbz28mqf6vz';
-var API_URL = 'http://api.rottentomatoes.com/api/public/v1.0/lists/movies/in_theaters.json';
-var PAGE_SIZE = 25;
-var PARAMS = '?apikey=' + API_KEY + '&page_limit=' + PAGE_SIZE;
-var REQUEST_URL = API_URL + PARAMS;
+var API_BASE = "http://115.28.211.212:8866/api/"
+var BOOKS    = "books?"
+var INDEXES  = "indexes?"
+var CONTENTS = "contents?"
 
-class cnbooks extends Component {
+var _navigator;
+
+class VContents extends Component {
+
+}
+
+class VIndexes extends Component {
+
+}
+
+class VBooks extends Component {
   constructor(props) {
     super(props);
     this.state = {
-      dataSource: new ListView.DataSource({
-        rowHasChanged: (row1, row2) => row1 !== row2,
-      }),
-      loaded: false,
+      blob:{},
+      ds: new ListView.DataSource({
+        rowHasChanged: (r1, r2) => r1 !== r2,
+        sectionHeaderHasChanged: (h1, h2) => h1 !== h2,
+      })
     };
   }
 
@@ -39,84 +51,116 @@ class cnbooks extends Component {
   }
 
   fetchData() {
-    fetch(REQUEST_URL)
-      .then((response) => response.json())
-      .then((responseData) => {
+    fetch(API_BASE+BOOKS+"lang=zhs")
+      .then((res) => res.json())
+      .then((json) => {
+        var b = this.state.blob;
+        for (var i = 0; i < json.length; i++) {
+           b[json[i].title] = json[i].books;
+        }
         this.setState({
-          dataSource: this.state.dataSource.cloneWithRows(responseData.movies),
-          loaded: true,
+          blob: b,
+          ds: this.state.ds.cloneWithRowsAndSections(this.state.blob),
         });
       })
       .done();
   }
 
   render() {
-    if (!this.state.loaded) {
-      return this.renderLoadingView();
-    }
-
     return (
-      <ListView
-         dataSource={this.state.dataSource}
-         renderRow={this.renderMovie}
-         style={styles.listView}>
-      </ListView>
+      <ListView 
+        pageSize={25}
+        style={styles.list}
+        dataSource={this.state.ds}
+        renderRow={this.renderRow}
+        renderSectionHeader={this.renderSectionHeader} />
     );
   }
 
-  renderLoadingView() {
+  _handlePress() {
+
+  }
+
+  renderRow(raw, secID, rowID) {
     return (
-      <View style={styles.container}>
-        <Text>
-          Loading movies...
-        </Text>
-      </View>
+      //<View>
+        <TouchableHighlight onPress={() => this._handlePress()}>
+          <View style={styles.row}>
+            <Text style={styles.rowTitleText}>{raw.title}</Text>
+            <Text style={styles.rowDetailText}>{raw.desc}</Text>
+          </View>
+        </TouchableHighlight>
+        //<View style={styles.separator} />
+      //</View>
     );
   }
 
-  renderMovie(movie) {
+  // handleRowPress(id) {
+  //   // const { navigator } = this.props;
+  //   // if(navigator) {
+  //   //   navigator.push({
+  //   //     name:'indexes',
+  //   //     component: VIndexes,
+  //   //   });
+  //   // }
+  // }
+
+  renderSectionHeader(sectionData, sectionID) {
     return (
-      <View style={styles.container}>
-        <Image 
-          source={{uri: movie.posters.thumbnail}}
-          style={styles.thumbnail}>
-        </Image>
-        <View style={styles.rightContainer}>
-          <Text style={styles.title}>{movie.title}</Text>
-          <Text style={styles.year}>{movie.year}</Text>
-        </View>
-      </View>
+        <Text style={styles.sectionHeader}>{sectionID}</Text>
     );
   }
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    flexDirection: 'row',
+class VGuoXue extends Component {
+   render() {
+      var defName = 'books';
+      var defV = VBooks;
+      return (
+        <Navigator
+          initialRoute={{name:'books'}}
+          renderScene={(route, nav) => {
+            if (route.name == 'books') {
+              return <VBooks navigator={nav} />;
+            } else if (route.name == 'indexes') {
+              return <VIndexes navigator={nav} />;
+            } else if (route.name == 'contents') {
+              return <VContents navigator={nav} />;
+            }
+          }} />
+      );
+   }
+}
+
+var styles = StyleSheet.create({
+  list: {
+    backgroundColor: '#eeeeee',
+  },
+  sectionHeader: {
+    padding: 5,
+    fontWeight: '500',
+    fontSize: 14,
+  },
+  row: {
+    backgroundColor: 'white',
     justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5FCFF',
+    paddingHorizontal: 15,
+    paddingVertical: 8,
   },
-  rightContainer: {
-    flex: 1,
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#bbbbbb',
+    marginLeft: 15,
   },
-  title: {
-    fontSize: 20,
-    marginBottom: 8,
-    textAlign: 'center',
+  rowTitleText: {
+    fontSize: 17,
+    fontWeight: '500',
   },
-  year: {
-    textAlign: 'center',
-  },
-  thumbnail: {
-    width: 53,
-    height: 81,
-  },
-  listView: {
-    paddingTop: 20,
-    backgroundColor: '#F5FCFF',
+  rowDetailText: {
+    fontSize: 15,
+    color: '#888888',
+    lineHeight: 20,
   },
 });
 
-AppRegistry.registerComponent('cnbooks', () => cnbooks);
+AppRegistry.registerComponent('cnbooks', () => VGuoXue);
